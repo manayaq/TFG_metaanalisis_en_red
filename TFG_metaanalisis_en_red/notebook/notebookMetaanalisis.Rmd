@@ -1,0 +1,392 @@
+---
+title: "Experimento inSAN"
+author: "Martín Anaya Quesada"
+output: html_notebook
+---
+
+Comenzamos instalando y cargando todos los paquetes necesarios para el experimento.
+```{r}
+#install.packages("readxl")
+#install.packages("writexl")
+#install.packages("dplyr")
+#install.packages("netmeta")
+#install.packages("mvtnorm")
+#install.packages("rgl")
+
+
+library("readxl") # Leer hojas de cálculo
+library("writexl") # Escribir en hojas de cálculo
+library("dplyr") # Paquete para la manipulación de datos
+library("netmeta") # Modelo de metaanálisis en red
+library("mvtnorm") # Se utiliza para generar las probabilidades del rankograma
+library("rgl") # Posibilita generar la red de evidencia en 3D
+
+```
+
+La inseguridad alimentaria y nutricional (inSAN) es la condición de aquellas personas que no cuentan con un acceso constante y sostenible a alimentos inocuos que satisfagan sus necesidades nutricionales. En la Agenda 2030, Naciones Unidas propuso uno de los diecesiete Objetivos de Desarrollo Sostenible centrado en acabar con el hambre en el mundo. Sin embargo, muy a menudo, la inSAN es consecuencia de una complicada combinación de condiciones sociales, económicas, políticas e incluso ambientales. Para abordar este problema, es crucial comprender qué factores son sus principales causantes y cómo están relacionados entre ellos.
+
+En el siguiente bloque, se pueden escoger los factores a considerar para el metaanálisis en red, además de los estudios que no han pasado el filtro y deben ser excluidos. El usuario también puede especificar si desea realizar un metaanálisis en red con el modelo de efectos fijos o aleatorios, cuál será el factor de referencia y decidir el indicador del tamaño del efecto más adecuado.
+
+Hay una gran cantidad de factores disponibles. Se recomienda comprobar el archivo data.xlsx para decidir qué factores incluir según el objetivo del metaanálisis.
+
+Los identificadores de los distintos estudios que forman parte de la base de datos son los siguientes:
+"E1 - Intención Migratoria Guat", "E2 - ECHO_CA 2020","E3 - ECHO_CA 2021","E4 - ECHO_CA 2021","E5 - ECHO_CA 2022","E6 - SMART_Corredor Seco 2010","E7 - PROCOMIDA 2015","E8 - PROCOMIDA 2014","E9 - PROCOMIDA 2010","E10 - ECHO 2016","E11 - PMA_CA"
+
+```{r}
+archivo_datos <- "data/data.xlsx"
+
+factores_a_analizar <- c("Femenino", "Menos de primaria", "Violencia_sí","Soltero/a", "Más de 4",  "Huerto_no","Embarazadas_sí", "Mala o muy mala",  "Desastres_sí", "AyudaHumanitaria_no")
+
+#Algunos ejemplos de factores interesantes con los que experimentar: "Católico", "Organizaciones_no","Tierra propia_no", "Producción_no", "Menores de 2_sí", "IncrementoPrecios_sí", "Remesas_no", "Otro", "Pobres o extremadamente pobres", "Migración_sí", "PROCOMIDA_no", "Lactantes_sí", "Trabajo_no"
+
+estudios_excluidos <- c("E6 - SMART_Corredor Seco 2010", "E9 - PROCOMIDA 2010")
+
+#"OR", "RR"
+tamano_efecto <- "OR"
+
+#En caso de establecer esta variable a FALSE, se realiza el metaanálisis mediante el modelo de efectos fijos (No recomendado puesto que tratamos datos de varios países distintos)
+modelo_efectos_aleatorios = TRUE
+
+factor_referencia <- "Femenino"
+
+valores_pequenos <- "bad" #Se debe inicializar esta variable a "good" o "bad" para jerarquizar los factores. En nuestro caso, un tamaño del efecto mayor indica una mayor importancia del factor, luego los tamaños del efecto pequeños clasifican peor ("bad")
+
+semilla = 1234 #Semilla para hacer reproducible el experimento
+set.seed(semilla)
+
+#Comprobaciones de los datos introducidos por el usuario para garantizar el funcionamiento del código sin errores
+if (!file.exists(archivo_datos)) {
+  stop("La ruta a la base de datos no es correcta")
+}
+if (!(factor_referencia %in% factores_a_analizar)) {
+  stop("El factor de referencia no está en la lista de factores a analizar.")
+}
+if (!(tamano_efecto %in% c("OR", "RR"))) {
+  stop("El tamano de efecto seleccionado no es compatible")
+}
+if (modelo_efectos_aleatorios != TRUE && modelo_efectos_aleatorios != FALSE){
+  stop("La variable modelo_efectos_aleatorios debe inicializarse a TRUE o FALSE")
+}
+if (valores_pequenos != "good" && valores_pequenos != "bad"){
+  stop("La variable valores_pequenos debe inicializarse a good o bad")
+}
+
+print("Inicialización de las opciones del metaanálisis correcta")
+```
+
+En la base de datos existen diversos factores sobre los que no se tiene información, que no están en el formato deseado o que el usuario ha indicado que quiere excluir del metaanálisis. En el siguiente bloque se lee la base de datos (ignorando los estudios excluidos) y mediante la función limpia_datos() se procesan y almacenan en un dataframe que representará toda la evidencia a incluir en la red.
+
+```{r}
+nombres_hojas <- excel_sheets(archivo_datos) #El nombre de cada hoja se corresponde al identificador de la investigación que aporta los datos de dicha hoja.
+
+nombres_hojas <- nombres_hojas[!nombres_hojas %in% estudios_excluidos]
+
+
+print("Leyendo los estudios: ")
+print(nombres_hojas)
+
+#datos_estudios es una lista de dataframes, en cada elemento se almacena la información de un estudio
+datos_estudios <- lapply(nombres_hojas, function(hoja) {
+  if (!(hoja %in% estudios_excluidos)) {
+    read_excel(archivo_datos, sheet = hoja)
+  }else {
+    NULL  #NULL si el estudio ha quedado descartado
+  }
+})
+
+#Eliminar elementos NULL
+datos_estudios <- datos_estudios[!sapply(datos_estudios, is.null)]
+
+
+#Función para la preparación de datos
+limpia_datos <- function(dataframe) {
+  #Guardamos las filas que contienen el valor NA (no hay datos sobre este factor)
+  filas_na <- which(rowSums(is.na(dataframe)) > 0)
+  
+  #Vector con las filas vacías que pretendemos eliminar. La fila anterior es su identificador por lo que también se debe borrar.
+  filas_a_eliminar <- unique(c(filas_na - 1, filas_na))
+  
+  #Antes de llevar a cabo la eliminación, comprobamos que todos los índices están dentro del tamaño del vector
+  filas_a_eliminar <- filas_a_eliminar[filas_a_eliminar > 0 & filas_a_eliminar <= nrow(dataframe)]
+  
+  #Eliminamos las filas
+  dataframe_filtrado <- dataframe[-filas_a_eliminar, ]
+  
+  #Establecemos el identificador de cada columna y su tipo
+  colnames(dataframe_filtrado) <- c("Factor", "ISAN_Leve", "ISAN_Severa", "Total")
+  dataframe_filtrado$ISAN_Leve <- as.numeric(dataframe_filtrado$ISAN_Leve)
+  dataframe_filtrado$ISAN_Severa <- as.numeric(dataframe_filtrado$ISAN_Severa) 
+  dataframe_filtrado$Total <- as.numeric(dataframe_filtrado$Total) 
+  return(dataframe_filtrado)
+}
+
+
+datos_estudios_limpios <- lapply(datos_estudios, limpia_datos)
+
+
+#Seleccionamos únicamente los factores que el usuario ha decidido incluir en el metaanálisis
+datos_estudios_limpios <- lapply(datos_estudios_limpios, function(dataframe){
+  filter(dataframe, Factor %in% factores_a_analizar)
+})
+
+
+#Asigna el nombre del estudio a cada dataframe
+names(datos_estudios_limpios) <- nombres_hojas
+print(datos_estudios_limpios)
+
+
+#Podemos guardar los datos limpios en un nuevo excel
+#write_xlsx(datos_estudios_limpios, "factores_considerados.xlsx")
+```
+
+Ahora debemos implementar las funciones para calcular los tamaños del efecto que se pueden utilizar con datos dicotómicos. Aquí se definen dos métodos para computar el Odds Ratio y el Risk Ratio respectivamente. Recordemos que estos valores se deben tomar en escala logarítmica.
+
+Se ha considerado inSAN Moderada/Severa como evento y SAN/inSAN leve como no evento.
+
+```{r}
+#Función para calcular el odds ratio de dos factores
+calcular_odds_ratio <- function(a, b, c, d) {
+  # a = ISAN_Severa_Factor1
+  # b = ISAN_Leve_Factor1
+  # c = ISAN_Severa_Factor2
+  # d = ISAN_Leve_Factor2
+  
+  #Fórmula odds ratio (tomando el logaritmo natural)
+  OR <- log((a / b) / (c / d))
+  
+  #Fórmula para calcular el error estándar del log(OR)
+  se_log_OR <- sqrt(1/a + 1/b + 1/c + 1/d)
+  
+  return(list(TE = OR, seTE = se_log_OR))
+}
+
+calcular_risk_ratio <- function(a, b, c, d) {
+  # a = ISAN_Severa_Factor1
+  # b = ISAN_Leve_Factor1
+  # c = ISAN_Severa_Factor2
+  # d = ISAN_Leve_Factor2
+  
+  #Fórmula risk ratio (tomando el logaritmo natural)
+  RR <- log((a / (a + b)) / (c / (c + d)))
+  
+  #Fórmula para calcular el error estándar del log(RR)
+  se_log_RR <- sqrt((1/a) - (1/(a + b)) + (1/c) - (1/(c + d)))
+  
+  return(list(TE = RR, seTE = se_log_RR))
+}
+```
+
+
+Para realizar el metaanálisis en red con el paquete netmeta, los datos deben aparecer a nivel de contraste. Utilizamos los tamaños del efecto implementados en el bloque anterior para generar las comparaciones necesarias.
+
+```{r}
+  #Dataframe que almacenará los datos en formato compatible con netmeta
+  df_contrastes <- data.frame(Estudio = character(),
+                         Factor1 = character(),
+                         Factor2 = character(),
+                         TE = numeric(),
+                         seTE = numeric(),
+                         stringsAsFactors = FALSE
+  )
+
+for (index in seq_along(datos_estudios_limpios)) {
+  df = datos_estudios_limpios[[index]]
+  
+  #Generar todas las comparaciones posibles entre factores, se almacena en forma de columna
+  if (length(unique(df$Factor)) < 2) {
+    next  #Si no hay al menos dos factores, no se pueden generar comparaciones
+  }
+  combinaciones <- combn(df$Factor, 2)
+  
+  
+  #Calcular el tamaño del efecto y error estándar para cada comparación
+  for (i in 1:ncol(combinaciones)) {
+    factor1 <- combinaciones[1, i]
+    factor2 <- combinaciones[2, i]
+  
+    a <- df$ISAN_Severa[df$Factor == factor1]
+    b <- df$ISAN_Leve[df$Factor == factor1]
+    c <- df$ISAN_Severa[df$Factor == factor2]
+    d <- df$ISAN_Leve[df$Factor == factor2]
+  
+    if(tamano_efecto == "OR"){
+      resultado <- calcular_odds_ratio(a, b, c, d)
+    } else if(tamano_efecto == "RR"){
+      resultado <- calcular_risk_ratio(a, b, c, d)
+    }
+    
+    #Los resultados se almacenan en el dataframe df_contrastes
+    df_contrastes <- rbind(df_contrastes, data.frame(
+                                          Estudio = names(datos_estudios_limpios)[index],
+                                          Factor1 = factor1,
+                                          Factor2 = factor2,
+                                          TE = resultado$TE,
+                                          seTE = resultado$seTE,
+                                          stringsAsFactors = FALSE
+    ))
+  }
+  
+}
+  #Mostrar los resultados
+  print(df_contrastes)
+
+```
+
+
+Todo está listo para ajustar el modelo. Para ello, utilizaremos el modelo basado en teoría de grafos que implementa netmeta.
+```{r}
+settings.meta(digits = 2, digits.se = 3) #Los tamaños del efecto y sus intervalos de confianza se mostrarán con dos cifras y los errores con tres
+
+#Función para ajustar modelos del paquete netmeta
+m.netmeta <- netmeta(TE = TE,
+                     seTE = seTE,
+                     treat1 = Factor1,
+                     treat2 = Factor2,
+                     studlab = Estudio,
+                     data = df_contrastes,
+                     sm = tamano_efecto, #Tamaño del efecto escogido por el usuario
+                     fixed = !modelo_efectos_aleatorios,
+                     random = modelo_efectos_aleatorios, #Se recomienda utilizar un modelo de efectos aleatorios porque los datos proceden de distintos países
+                     reference.group = factor_referencia, #Factor de referencia escogido por el usuario
+                     details.chkmultiarm = TRUE, #Imprimir estimaciones inconsistentes
+                     #tol.multiarm = 1, #Tolerancia a inconsistencia
+                     title = "Modelo de metaanálisis en red",
+                     sep.trts = " vs ") #Separador para indicar las comparaciones de la red
+
+```
+
+
+Con la función summary() podemos imprimir los resultados del ajuste del modelo.
+```{r}
+summary(m.netmeta)
+```
+
+Vamos a analizar los resultados. Como se explicó, el primer paso es estudiar la estructura de la red.
+```{r}
+netgraph(m.netmeta, plastic = TRUE, multiarm = TRUE, number.of.studies = TRUE, cex.number = 1, pos.number.of.studies = 0.42, scale = 0.75, offset = 0.05, lwd = 3, alpha.transparency = 0.3, points = TRUE, cex.points = 5, col.points = "darkcyan", start.layout = "circle", iterate = FALSE)
+```
+
+```{r}
+#Mediante este comando podemos ver el orden en el que se han considerado los factores en el metaanálisis. Lo utilizamos para establecer las etiquetas a mano y de este modo embellecer las gráficas. Este paso es opcional.
+m.netmeta$trts
+
+#etiquetas_bonitas <- c("Sin Ayuda Humanitaria", "Desastres Naturales", "Embarazadas", "Femenino", "Sin huerto", "Sit. Financiera Mala","Familia Numerosa", "Sin Estudios", "Soltero", "Violencia")
+
+
+#Función para imprimir la red de evidencia
+#netgraph(m.netmeta, plastic = TRUE, multiarm = FALSE, number.of.studies = TRUE, cex.number = 1, pos.number.of.studies = 0.42, scale = 0.75, offset = 0.05, lwd = 3, alpha.transparency = 0.3, points = TRUE, cex.points = 5, col.points = "darkcyan", labels = etiquetas_bonitas)
+
+
+#También se puede crear el diagrama de red en tres dimensiones, especialmente útil en redes con gran número de nodos.
+#netgraph(m.netmeta, dim = "3d",labels = etiquetas_bonitas)
+
+```
+
+Ahora vamos a calcular la inconsistencia de la red. Utilizamos un método global, el método de Higgins "design by treatment". 
+
+La salida muestra los valores de Q que indican la contribución de cada diseño a la inconsistencia de nuestro modelo.
+```{r}
+dbt <- decomp.design(m.netmeta)
+print(dbt)
+```
+
+Esta función devuelve dos dataframes. El primero de ellos emplea un modelo de efectos fijos, mientras que el segundo un modelo de efectos aleatorios. En cada caso, imprimimos el que corresponde. Debemos fijarnos en la columna pval, ya este nos ayuda a determinar la significancia estadística de nuestros resultados.
+
+```{r}
+if(modelo_efectos_aleatorios){
+  dbt$Q.inc.random #Para efectos aleatorios
+}else{
+  dbt$Q.decomp #Para efectos fijos
+}
+```
+
+
+Ahora vamos a emplear un método local para identificar de dónde procede la inconsistencia. Para ello empleamos el método de separación de nodos. Este desglosa las estimaciones de la red en evidencia directa e indirecta, lo que permite evaluar la inconsistencia en comparaciones individuales.
+
+Cuando se toman tamaños del efecto basados en diferencias, debemos fijarnos en la columna diff. Como en este experimento estamos tratando con tamaños del efecto basados en cocientes, nos fijamos en RoR (ratio of ratios)
+
+Cuando p<0.05 consideramos que hay un desacuerdo importante y el supuesto de consistencia queda en duda.
+```{r}
+df_divNodos <- netsplit(m.netmeta)
+
+df_divNodos
+
+```
+
+Podemos almacenar el resultado de esta separación de nodos en un gráfico de tipo diagrama de bosque.
+```{r}
+png(file="img/separacionNodos_bosque.png",
+width=1200, height=2650)
+df_divNodos %>% forest()
+invisible(dev.off())
+```
+
+También utilizaremos un método gráfico para evaluar la inconsistencia. Este será el diagrama de calor, que netmeta implementa en la función netheat.
+
+Hay que recordar que un diagrama de calor muestra los diseños, no las propias comparaciones. Como la red incluye estudios multibrazo encontramos diseños variados.
+
+Por lo general las diagonales tienen mayor área porque incluye la evidencia directa.
+
+Las filas y columnas aparecen ordenadas según la inconsistencia, por eso es común encontrar los mayores valores en la zona superior izquierda.
+
+La interpretación es la siguiente: Cuando encontramos un valor rojo en la fila f, columna c, significa que la contribución del diseño c a la estimación conseguida por el diseño f es inconsistente.
+```{r}
+#El diagrama de calor es demasiado grande y no se puede mostrar por pantalla. Se almacena directamente en formato png.
+
+png(file="img/diagrama_calor.png", width=1600, height=1350)
+netheat(m.netmeta, random = modelo_efectos_aleatorios, sortvar = TRUE, main ="Diagrama de calor", nchar.trts = 5)
+invisible(dev.off())
+```
+
+Una vez estudiada la inconsistencia en la red, podemos mostrar las estimaciones de los contrastes entre cada factor. En parte sobre la diagonal superior de la tabla de clasificación se muestran las estimaciones obtenidas únicamente a través de comparaciones directas, y en la inferior los resultados globales (incluso para aquellas comparaciones que sin evidencia indirecta).
+```{r}
+tabla_liga <- netleague(m.netmeta, 
+                       bracket = "(", # use round brackets
+                       digits=2)
+
+tabla_liga
+```
+
+Vamos a representar los resultados en un diagrama de bosque. Este muestra el efecto de cada factor en comparación al factor de referencia. Recordamos que el intervalo de confianza no debe incluir el valor de no efecto (0 en tamaños del efecto basados en diferencias, 1 en cocientes) para resultar significativo.
+```{r}
+if(modelo_efectos_aleatorios){
+  tag <- "Modelo de efectos aleatorios"
+}else{
+  tag <- "Modelo de efectos fijos"
+}
+
+#Descomentar estas líneas para guardarlo como png
+
+#png(file="diagrama_bosque.png")
+forest(m.netmeta, 
+       reference.group = factor_referencia,
+       sortvar = TE,
+       xlim = c(0.2, 3),
+       smlab = paste("Factores vs. ", factor_referencia ,"\n",
+                     tag),
+       drop.reference.group = TRUE,
+       label.left = "A favor del factor de referencia",
+       label.right = "A favor del factor") #labels = etiquetas_bonitas)
+#dev.off()
+
+```
+
+
+Una de las partes más interesantes del metaanálisis en red es su capacidad para ordenar los factores según la influencia de sus efectos. La función netrank utiliza el P-Score (equivalente a SUCRA) para conseguir una jerarquía de factores. Se debe indicar si los valores pequeños representan algo "bueno" (good) o "malo" (bad) en el criterio de ordenación.
+```{r}
+netrank(m.netmeta, small.values = valores_pequenos)
+```
+Gracias a las distribuciones normales que implementa el paquete mvtnorm, podemos crear un rankograma, en el que aparece la probabilidad de cada factor de alcanzar cierto puesto en la jerarquía. Una vez más, se debe indicar el significado de los valores pequeños del efecto. Hay varias formas de representar su salida, por ejemplo, en una tabla de probabilidades:
+```{r}
+rankogram(m.netmeta, small.values = valores_pequenos)
+```
+
+También podemos conseguir sus dos gráficas características: la curva de probabilidad acumulada y el gráfico de barras con el puesto de cada factor.
+```{r}
+plot(rankogram(m.netmeta, small.values = valores_pequenos, cumulative.rankprob = TRUE))
+```
+
+```{r}
+plot(rankogram(m.netmeta, small.values = valores_pequenos, cumulative.rankprob = FALSE))
+```
+

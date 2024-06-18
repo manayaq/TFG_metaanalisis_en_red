@@ -1,0 +1,66 @@
+---
+title: "Diagrama Gantt"
+output: html_notebook
+---
+Diagrama de Gantt mediante el paquete ganttrify
+```{r}
+#install.packages("ganttrify", repos = c("https://giocomai.r-universe.dev","https://cloud.r-project.org"))
+library(ganttrify)
+```
+
+Este dataframe contiene las tareas realizadas en el TFG distribuidas por semanas (consideramos como inicio de semana los días 1, 8, 15, 22, 29)
+```{r}
+df1 <- data.frame(wp = c("F0 - Análisis del problema"),
+                  activity = c("0.1. Recopilación inicial de información"),
+                  start_date = c("2023-07-01"),#c(1),
+                  end_date = c("2023-08-15"))#c(2))
+
+
+f01 <- list("F0 - Análisis del problema", "0.2. Comprensión de la materia y metodología", "2023-07-22", "2023-10-01")
+f02 <- list("F0 - Análisis del problema", "0.3. Planteamiento del problema", "2023-09-15", "2023-10-01")
+
+f10 <- list("F1 - Metaanálisis a pares", "1.1. Búsqueda bibliográfica", "2023-10-01", "2023-11-15")
+f11 <- list("F1 - Metaanálisis a pares", "1.2. Redacción del marco teórico", "2023-10-15", "2024-01-1")
+
+f20 <- list("F2 - Metaanálisis en red", "2.1. Búsqueda bibliográfica", "2024-01-22", "2024-03-15")
+f21 <- list("F2 - Metaanálisis en red", "2.2. Redacción del marco teórico", "2024-02-08", "2024-05-22")  
+f22 <- list("F2 - Metaanálisis en red", "2.3. Búsqueda de paquetes disponibles en R", "2024-03-15", "2024-04-01")  
+
+f30 <- list("F3 - Experimentación", "3.1. Implementación de la solución", "2024-03-15", "2024-05-22")
+f31 <- list("F3 - Experimentación", "3.2. Experimentación con distintos factores y configuraciones", "2024-04-15", "2024-05-29")
+f32 <- list("F3 - Experimentación", "3.3. Análisis e interpretación de resultados", "2024-05-22", "2024-06-03")
+
+f40 <- list("F4 - Revisión", "4.1. Corrección de errores", "2024-05-01", "2024-06-08")
+f41 <- list("F4 - Revisión", "4.2. Revisión exhaustiva de la memoria", "2024-06-01", "2024-06-15")
+
+list_tareas <- list(f01, f02, f10, f11, f20, f21, f22, f30, f31, f32, f40, f41)
+
+for (i in list_tareas){
+  df1 <- rbind(df1, i)
+}
+
+```
+
+Gracias a esta función, podemos crear un diagrama de Gantt a partir del dataframe anterior
+```{r}
+p <- ganttrify(
+  project = df1,
+  project_start_date = "2023-07-01",
+  month_number_label = FALSE,
+  x_axis_position = "bottom",
+  mark_quarters = TRUE,
+  axis_text_align = "left",
+  #line_end = "butt",
+  by_date = TRUE,
+  exact_date = TRUE,
+  label_wrap = 32,
+  alpha_wp = 0.65,
+)
+p
+```
+
+
+```{r}
+ggsave(p, filename = "diagrama_gantt.png",height = 10, width = 10, bg='white')
+```
+
